@@ -1,0 +1,12 @@
+# Local editor and OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs and temporary exports
+*.log
+*.tmp
+*.bak
+
+# Packaged extension artifacts are attached to releases instead of committed.
+*.zip
