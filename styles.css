@@ -232,7 +232,7 @@ textarea {
 
 .metric-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 14px;
 }
 
@@ -263,7 +263,9 @@ textarea {
 }
 
 .status-chip.neutral,
-.badge.pending {
+.badge.pending,
+.badge.gone,
+.badge.invalid {
   background: var(--surface-soft);
   color: var(--muted);
 }
