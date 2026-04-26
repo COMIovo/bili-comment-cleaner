@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>B站评论清理助手</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div>
+      <p class="eyebrow">AICU 索引 + B站登录态</p>
+      <h1>B站评论清理助手</h1>
+      <p class="subtitle">扫描当前账号的视频历史评论，预览勾选后慢速删除。</p>
+    </div>
+    <div class="login-panel">
+      <span id="loginStatus" class="status-chip neutral">未检测</span>
+      <button id="refreshLogin" class="button secondary" type="button">刷新登录态</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="panel controls-panel" aria-labelledby="scanTitle">
+      <div class="section-head">
+        <div>
+          <h2 id="scanTitle">扫描条件</h2>
+          <p>默认扫描当前登录 UID 在 AICU 中的历史视频评论索引。</p>
+        </div>
+        <button id="startScan" class="button primary" type="button">扫描评论</button>
+      </div>
+
+      <div class="form-grid">
+        <label>
+          <span>关键词</span>
+          <input id="keywords" type="text" placeholder="逗号分隔，留空表示不过滤">
+        </label>
+        <label>
+          <span>开始日期</span>
+          <input id="startDate" type="date">
+        </label>
+        <label>
+          <span>结束日期</span>
+          <input id="endDate" type="date">
+        </label>
+        <label>
+          <span>删除间隔（秒）</span>
+          <input id="deleteInterval" type="number" min="1" max="120" step="1" value="3">
+        </label>
+        <label>
+          <span>最多扫描页数</span>
+          <input id="maxPages" type="number" min="1" max="500" step="1" value="100">
+        </label>
+        <label class="checkbox-field">
+          <input id="strictVerify" type="checkbox" checked>
+          <span>删除前向 B站严格核验评论归属</span>
+        </label>
+      </div>
+
+      <label class="wide-field">
+        <span>限定视频列表（可选，每行一个 BV / av / 视频 URL）</span>
+        <textarea id="videoList" rows="4" placeholder="留空表示扫描该 UID 的全部 AICU 评论索引"></textarea>
+      </label>
+
+      <div class="toolbar">
+        <button id="stopScan" class="button ghost" type="button" disabled>停止扫描</button>
+        <button id="clearResults" class="button ghost" type="button">清空结果</button>
+        <span id="scanProgress" class="progress-text">尚未扫描</span>
+      </div>
+    </section>
+
+    <section class="metric-grid" aria-label="任务统计">
+      <div class="metric"><span>候选</span><strong id="metricCandidates">0</strong></div>
+      <div class="metric"><span>已勾选</span><strong id="metricSelected">0</strong></div>
+      <div class="metric"><span>已删除</span><strong id="metricDeleted">0</strong></div>
+      <div class="metric"><span>失败/跳过</span><strong id="metricFailed">0</strong></div>
+    </section>
+
+    <section class="panel" aria-labelledby="previewTitle">
+      <div class="section-head">
+        <div>
+          <h2 id="previewTitle">预览与删除</h2>
+          <p>只会处理表格中被勾选的评论。删除动作不可撤销。</p>
+        </div>
+        <div class="button-row">
+          <button id="selectAll" class="button secondary" type="button">全选</button>
+          <button id="invertSelection" class="button secondary" type="button">反选</button>
+          <button id="startDelete" class="button danger" type="button" disabled>开始删除</button>
+          <button id="pauseDelete" class="button secondary" type="button" disabled>暂停</button>
+          <button id="stopDelete" class="button ghost" type="button" disabled>停止</button>
+        </div>
+      </div>
+
+      <div id="message" class="message" role="status"></div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th class="select-col">选</th>
+              <th>状态</th>
+              <th>时间</th>
+              <th>视频</th>
+              <th>层级</th>
+              <th>rpid/root</th>
+              <th>内容</th>
+              <th>匹配原因</th>
+            </tr>
+          </thead>
+          <tbody id="previewBody">
+            <tr><td colspan="8" class="empty">等待扫描结果</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p id="renderHint" class="render-hint"></p>
+    </section>
+
+    <section class="panel" aria-labelledby="logTitle">
+      <div class="section-head">
+        <div>
+          <h2 id="logTitle">日志导出</h2>
+          <p>导出会包含候选评论、删除状态、错误码和错误信息。</p>
+        </div>
+        <div class="button-row">
+          <button id="exportCsv" class="button secondary" type="button" disabled>导出 CSV</button>
+          <button id="exportJson" class="button secondary" type="button" disabled>导出 JSON</button>
+          <button id="copyDebug" class="button ghost" type="button" disabled>复制诊断日志</button>
+        </div>
+      </div>
+      <div id="logList" class="log-list">暂无日志</div>
+    </section>
+  </main>
+
+  <script src="utils.js"></script>
+  <script src="dashboard.js"></script>
+</body>
+</html>
