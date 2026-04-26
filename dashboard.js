@@ -12,8 +12,11 @@
   const BILI_REPLY_DELETE_API = "https://api.bilibili.com/x/v2/reply/del";
   const BILI_WORKER_URL = "https://www.bilibili.com/";
   const SETTINGS_KEY = "biliCleanerSettings";
+  const PROCESSED_KEY_PREFIX = "biliCleanerProcessed:";
   const MAX_RENDER_ROWS = 500;
+  const MAX_PROCESSED_RECORDS = 50000;
   const FATAL_CODES = new Set([-101, -111, -509]);
+  const CLOSED_STATUSES = new Set(["deleted", "gone", "invalid"]);
 
   const state = {
     user: null,
@@ -21,11 +24,13 @@
     items: [],
     logs: [],
     selected: new Set(),
+    processedRecords: {},
     scan: {
       running: false,
       stop: false,
       pages: 0,
-      scanned: 0
+      scanned: 0,
+      hiddenProcessed: 0
     },
     deletion: {
       running: false,
@@ -39,7 +44,8 @@
       deleteInterval: 3,
       maxPages: 100,
       videoList: "",
-      strictVerify: true
+      strictVerify: true,
+      showProcessed: false
     }
   };
 
@@ -59,8 +65,8 @@
   function bindElements() {
     for (const id of [
       "loginStatus", "refreshLogin", "keywords", "startDate", "endDate", "deleteInterval",
-      "maxPages", "strictVerify", "videoList", "startScan", "stopScan", "clearResults",
-      "scanProgress", "metricCandidates", "metricSelected", "metricDeleted", "metricFailed",
+      "maxPages", "strictVerify", "showProcessed", "videoList", "startScan", "stopScan", "clearResults", "clearProcessed",
+      "scanProgress", "metricCandidates", "metricSelected", "metricDeleted", "metricFailed", "metricHidden",
       "selectAll", "invertSelection", "startDelete", "pauseDelete", "stopDelete",
       "previewBody", "message", "renderHint", "exportCsv", "exportJson", "copyDebug", "logList"
     ]) {
@@ -76,6 +82,7 @@
       setMessage("正在停止扫描，当前请求结束后会停下。", "warn");
     });
     els.clearResults.addEventListener("click", clearResults);
+    els.clearProcessed.addEventListener("click", clearProcessedRecords);
     els.selectAll.addEventListener("click", selectAllPending);
     els.invertSelection.addEventListener("click", invertSelection);
     els.startDelete.addEventListener("click", startDelete);
@@ -85,7 +92,7 @@
     els.exportJson.addEventListener("click", exportJson);
     els.copyDebug.addEventListener("click", copyDebugLog);
 
-    for (const input of [els.keywords, els.startDate, els.endDate, els.deleteInterval, els.maxPages, els.strictVerify, els.videoList]) {
+    for (const input of [els.keywords, els.startDate, els.endDate, els.deleteInterval, els.maxPages, els.strictVerify, els.showProcessed, els.videoList]) {
       input.addEventListener("input", () => {
         collectSettingsFromForm();
         saveSettings();
@@ -114,6 +121,7 @@
     els.maxPages.value = state.settings.maxPages || 100;
     els.videoList.value = state.settings.videoList || "";
     els.strictVerify.checked = state.settings.strictVerify !== false;
+    els.showProcessed.checked = state.settings.showProcessed === true;
   }
 
   function collectSettingsFromForm() {
@@ -124,7 +132,8 @@
       deleteInterval: clampNumber(els.deleteInterval.value, 1, 120, 3),
       maxPages: clampNumber(els.maxPages.value, 1, 500, 100),
       videoList: els.videoList.value.trim(),
-      strictVerify: els.strictVerify.checked
+      strictVerify: els.strictVerify.checked,
+      showProcessed: els.showProcessed.checked
     };
     return state.settings;
   }
@@ -166,6 +175,7 @@
         addLog("登录核验", "warn", `无法读取 nav 接口，继续使用 cookie UID：${error.message}`);
       }
 
+      await loadProcessedRecords();
       updateLoginChip(`UID ${state.user.uid}${state.user.uname ? ` · ${state.user.uname}` : ""}`, "good");
       setMessage("登录态已就绪。", "success");
       renderAll();
@@ -185,6 +195,31 @@
         chrome.cookies.get({ url: "https://api.bilibili.com/", name }, resolve);
       });
     });
+  }
+
+  async function loadProcessedRecords() {
+    state.processedRecords = {};
+    if (!chrome.storage || !state.user || !state.user.uid) return;
+    const key = processedStorageKey();
+    const result = await chrome.storage.local.get(key);
+    state.processedRecords = result[key] && typeof result[key] === "object" ? result[key] : {};
+  }
+
+  async function saveProcessedRecords() {
+    if (!chrome.storage || !state.user || !state.user.uid) return;
+    pruneProcessedRecords();
+    await chrome.storage.local.set({ [processedStorageKey()]: state.processedRecords });
+  }
+
+  function processedStorageKey() {
+    return `${PROCESSED_KEY_PREFIX}${state.user.uid}`;
+  }
+
+  function pruneProcessedRecords() {
+    const entries = Object.entries(state.processedRecords);
+    if (entries.length <= MAX_PROCESSED_RECORDS) return;
+    entries.sort((a, b) => String(b[1].at || "").localeCompare(String(a[1].at || "")));
+    state.processedRecords = Object.fromEntries(entries.slice(0, MAX_PROCESSED_RECORDS));
   }
 
   async function startScan() {
@@ -216,12 +251,15 @@
     state.scan.stop = false;
     state.scan.pages = 0;
     state.scan.scanned = 0;
+    state.scan.hiddenProcessed = 0;
+    await loadProcessedRecords();
     renderAll();
     setMessage("正在从 AICU 拉取历史评论索引...", "info");
 
     try {
       const limits = await resolveVideoLimits(state.settings.videoList);
       const maxPages = state.settings.maxPages;
+      const seenKeys = new Set();
 
       for (let page = 1; page <= maxPages; page += 1) {
         if (state.scan.stop) break;
@@ -235,21 +273,26 @@
         for (let index = 0; index < replies.length; index += 1) {
           const item = utils.normalizeAicuReply(replies[index], state.user.uid, `${page}-${index}`);
           if (!item.rpid || !item.oid) continue;
+          item.recordKey = makeRecordKey(item);
+          if (seenKeys.has(item.recordKey)) continue;
+          seenKeys.add(item.recordKey);
           if (!matchesVideoLimits(item, limits)) continue;
 
           const match = utils.matchesFilters(item, filters);
           if (!match.matches) continue;
 
-          item.status = "pending";
-          item.reason = match.reasons.join("；");
-          item.errorCode = "";
-          item.errorMessage = "";
-          item.verifyCode = "";
-          item.verifyMessage = "";
-          item.apiCode = "";
-          item.apiMessage = "";
-          item.debug = "";
-          item.deletedAt = "";
+          prepareQueueItem(item, match.reasons);
+          const record = state.processedRecords[item.recordKey];
+          if (record && CLOSED_STATUSES.has(record.status)) {
+            applyProcessedRecord(item, record);
+            if (!state.settings.showProcessed) {
+              state.scan.hiddenProcessed += 1;
+              continue;
+            }
+            state.items.push(item);
+            continue;
+          }
+
           state.items.push(item);
           state.selected.add(item.localId);
         }
@@ -261,7 +304,8 @@
       }
 
       const stopped = state.scan.stop ? "，已手动停止" : "";
-      setMessage(`扫描完成${stopped}：读取 ${state.scan.scanned} 条索引，匹配 ${state.items.length} 条。`, "success");
+      const hiddenText = state.scan.hiddenProcessed ? `，隐藏已处理 ${state.scan.hiddenProcessed} 条` : "";
+      setMessage(`扫描完成${stopped}：读取 ${state.scan.scanned} 条索引，匹配 ${state.items.length} 条${hiddenText}。`, "success");
     } catch (error) {
       setMessage(`扫描失败：${error.message}`, "error");
       addLog("扫描失败", "error", error.message);
@@ -301,6 +345,72 @@
     if (item.oid && limits.aids.has(String(item.oid))) return true;
     if (item.bvid && limits.bvids.has(String(item.bvid))) return true;
     return false;
+  }
+
+  function prepareQueueItem(item, reasons) {
+    item.recordKey = item.recordKey || makeRecordKey(item);
+    item.status = "pending";
+    item.reason = reasons.join("；");
+    item.errorCode = "";
+    item.errorMessage = "";
+    item.verifyCode = "";
+    item.verifyMessage = "";
+    item.apiCode = "";
+    item.apiMessage = "";
+    item.processedAt = "";
+    item.processedStatus = "";
+    item.debug = "";
+    item.deletedAt = "";
+  }
+
+  function makeRecordKey(item) {
+    return `${item.oid}:${item.rpid}`;
+  }
+
+  function applyProcessedRecord(item, record) {
+    item.status = record.status;
+    item.processedStatus = record.status;
+    item.processedAt = record.at || "";
+    item.deletedAt = record.status === "deleted" ? record.at || "" : "";
+    item.apiCode = record.status === "deleted" ? "0" : "";
+    item.apiMessage = record.status === "deleted" ? "之前已删除" : "";
+    item.errorCode = "";
+    item.errorMessage = record.message || "";
+    item.debug = record.debug || "";
+  }
+
+  async function markProcessedRecord(item, status, message, debug) {
+    if (!item || !item.oid || !item.rpid) return;
+    item.recordKey = item.recordKey || makeRecordKey(item);
+    const at = new Date().toISOString();
+    state.processedRecords[item.recordKey] = {
+      status,
+      at,
+      oid: item.oid,
+      rpid: item.rpid,
+      root: item.root || "",
+      level: item.level || "",
+      ctime: item.ctime || "",
+      timeText: item.timeText || "",
+      videoTitle: item.videoTitle || "",
+      videoUrl: item.videoUrl || "",
+      message: message || "",
+      debug: debug || ""
+    };
+    item.processedStatus = status;
+    item.processedAt = at;
+    await saveProcessedRecords();
+  }
+
+  function statusFromVerificationFailure(verification) {
+    const code = verification && verification.code ? String(verification.code) : "";
+    if (code === "verify_not_found" || code === "seek_not_found" || code === "seek_-404") {
+      return "gone";
+    }
+    if (code === "owner_mismatch") {
+      return "invalid";
+    }
+    return "skipped";
   }
 
   async function fetchAicuReplies(uid, page) {
@@ -402,12 +512,16 @@
 
       const verification = await verifyItem(item);
       if (!verification.ok) {
-        item.status = utils.nextDeleteState("verifying", "fail");
+        item.status = statusFromVerificationFailure(verification);
         item.errorCode = verification.code || "verify_failed";
         item.errorMessage = verification.message;
         item.verifyCode = verification.code || "";
         item.verifyMessage = verification.message || "";
         item.debug = verification.debug || item.debug || "";
+        if (CLOSED_STATUSES.has(item.status)) {
+          await markProcessedRecord(item, item.status, item.errorMessage, item.debug);
+          state.selected.delete(item.localId);
+        }
         addItemLog(item, "skipped", item.errorCode, item.errorMessage);
         return;
       }
@@ -424,6 +538,7 @@
         item.apiCode = "0";
         item.apiMessage = "删除成功";
         item.debug = result.debug || item.debug || "";
+        await markProcessedRecord(item, "deleted", "删除成功", item.debug);
         state.selected.delete(item.localId);
         addItemLog(item, "deleted", "0", "删除成功");
         return;
@@ -898,26 +1013,49 @@
     state.selected.clear();
     state.scan.scanned = 0;
     state.scan.pages = 0;
+    state.scan.hiddenProcessed = 0;
     if (showMessage) setMessage("结果已清空。", "info");
     renderAll();
   }
 
   function selectAllPending() {
     for (const item of state.items) {
-      if (item.status !== "deleted") state.selected.add(item.localId);
+      if (isDeletableStatus(item.status)) state.selected.add(item.localId);
     }
     renderAll();
   }
 
   function invertSelection() {
     for (const item of state.items) {
-      if (item.status === "deleted") continue;
+      if (!isDeletableStatus(item.status)) continue;
       if (state.selected.has(item.localId)) {
         state.selected.delete(item.localId);
       } else {
         state.selected.add(item.localId);
       }
     }
+    renderAll();
+  }
+
+  function isDeletableStatus(status) {
+    return !CLOSED_STATUSES.has(status) && status !== "verifying" && status !== "deleting";
+  }
+
+  async function clearProcessedRecords() {
+    if (!state.user || !state.user.uid) {
+      setMessage("请先刷新登录态，再清除已处理记录。", "warn");
+      return;
+    }
+    const total = Object.keys(state.processedRecords).length;
+    if (total > 0 && !window.confirm(`确定清除当前 UID 的 ${total} 条已处理记录吗？清除后下次扫描会重新显示它们。`)) {
+      return;
+    }
+    state.processedRecords = {};
+    state.scan.hiddenProcessed = 0;
+    if (chrome.storage) {
+      await chrome.storage.local.remove(processedStorageKey());
+    }
+    setMessage("已处理记录已清除。", "success");
     renderAll();
   }
 
@@ -951,7 +1089,7 @@
     const headers = [
       "status", "errorCode", "errorMessage", "uid", "oid", "bvid", "videoTitle",
       "videoUrl", "level", "rpid", "root", "ctime", "timeText", "message",
-      "reason", "verifyCode", "verifyMessage", "apiCode", "apiMessage", "debug", "deletedAt"
+      "reason", "verifyCode", "verifyMessage", "apiCode", "apiMessage", "processedStatus", "processedAt", "debug", "deletedAt"
     ];
     const csv = utils.buildCsv(headers, rows);
     downloadBlob(csv, `bili-comment-cleaner-${dateStamp()}.csv`, "text/csv;charset=utf-8");
@@ -984,6 +1122,7 @@
         deleteInterval: state.settings.deleteInterval,
         maxPages: state.settings.maxPages,
         strictVerify: state.settings.strictVerify,
+        showProcessed: state.settings.showProcessed,
         hasVideoList: Boolean(state.settings.videoList)
       },
       items: buildExportRows(),
@@ -1012,6 +1151,8 @@
       verifyMessage: item.verifyMessage || "",
       apiCode: item.apiCode || "",
       apiMessage: item.apiMessage || "",
+      processedStatus: item.processedStatus || "",
+      processedAt: item.processedAt || "",
       debug: item.debug || "",
       deletedAt: item.deletedAt || ""
     }));
@@ -1044,6 +1185,7 @@
   function renderButtons() {
     els.startScan.disabled = state.scan.running || state.deletion.running;
     els.stopScan.disabled = !state.scan.running;
+    els.clearProcessed.disabled = state.scan.running || state.deletion.running || !state.user;
     els.startDelete.disabled = state.deletion.running || selectedDeletableCount() === 0;
     els.pauseDelete.disabled = !state.deletion.running;
     els.pauseDelete.textContent = state.deletion.paused ? "继续" : "暂停";
@@ -1055,11 +1197,12 @@
 
   function renderMetrics() {
     const deleted = state.items.filter((item) => item.status === "deleted").length;
-    const failed = state.items.filter((item) => item.status === "failed" || item.status === "skipped").length;
+    const failed = state.items.filter((item) => item.status === "failed" || item.status === "skipped" || item.status === "gone" || item.status === "invalid").length;
     els.metricCandidates.textContent = state.items.length;
     els.metricSelected.textContent = state.selected.size;
     els.metricDeleted.textContent = deleted;
     els.metricFailed.textContent = failed;
+    els.metricHidden.textContent = state.scan.hiddenProcessed;
   }
 
   function renderTable() {
@@ -1094,7 +1237,7 @@
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
     checkbox.checked = state.selected.has(item.localId);
-    checkbox.disabled = item.status === "deleted" || state.deletion.running;
+    checkbox.disabled = !isDeletableStatus(item.status) || state.deletion.running;
     checkbox.addEventListener("change", () => {
       if (checkbox.checked) {
         state.selected.add(item.localId);
@@ -1140,7 +1283,9 @@
       deleting: "删除中",
       deleted: "已删除",
       failed: "失败",
-      skipped: "已跳过"
+      skipped: "已跳过",
+      gone: "已不存在",
+      invalid: "非当前账号"
     }[status] || "待处理";
   }
 
@@ -1160,7 +1305,7 @@
   }
 
   function selectedDeletableCount() {
-    return state.items.filter((item) => state.selected.has(item.localId) && item.status !== "deleted").length;
+    return state.items.filter((item) => state.selected.has(item.localId) && isDeletableStatus(item.status)).length;
   }
 
   function updateLoginChip(text, kind) {

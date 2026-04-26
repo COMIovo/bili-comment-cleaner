@@ -54,6 +54,10 @@
           <input id="strictVerify" type="checkbox" checked>
           <span>删除前向 B站严格核验评论归属</span>
         </label>
+        <label class="checkbox-field">
+          <input id="showProcessed" type="checkbox">
+          <span>显示已处理评论</span>
+        </label>
       </div>
 
       <label class="wide-field">
@@ -64,6 +68,7 @@
       <div class="toolbar">
         <button id="stopScan" class="button ghost" type="button" disabled>停止扫描</button>
         <button id="clearResults" class="button ghost" type="button">清空结果</button>
+        <button id="clearProcessed" class="button ghost" type="button">清除已处理记录</button>
         <span id="scanProgress" class="progress-text">尚未扫描</span>
       </div>
     </section>
@@ -73,6 +78,7 @@
       <div class="metric"><span>已勾选</span><strong id="metricSelected">0</strong></div>
       <div class="metric"><span>已删除</span><strong id="metricDeleted">0</strong></div>
       <div class="metric"><span>失败/跳过</span><strong id="metricFailed">0</strong></div>
+      <div class="metric"><span>已处理隐藏</span><strong id="metricHidden">0</strong></div>
     </section>
 
     <section class="panel" aria-labelledby="previewTitle">
