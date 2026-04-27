@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "B站评论清理助手",
-  "version": "1.0.6",
+  "version": "1.0.19",
   "description": "通过 AICU 索引定位当前账号历史评论，预览勾选后使用 B站登录态批量清理视频评论。",
   "permissions": [
     "cookies",

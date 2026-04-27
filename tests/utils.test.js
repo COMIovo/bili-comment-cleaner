@@ -29,6 +29,17 @@ run("parse video input", () => {
   assert.equal(parsed.hasLimits, true);
 });
 
+run("parse video input ignores tracking numbers in BV links", () => {
+  const parsed = utils.parseBiliVideoInput("https://www.bilibili.com/video/BV1324y1y7yq/?spm_id_from=333.999.0.0");
+  assert.equal(parsed.bvids.has("BV1324y1y7yq"), true);
+  assert.equal(parsed.aids.size, 0);
+});
+
+run("normalize video input strips reply anchors", () => {
+  const normalized = utils.normalizeBiliVideoInput("https://www.bilibili.com/video/BV1324y1y7yq/?spm_id_from=333.999.0.0#reply295627202769");
+  assert.equal(normalized.text, "BV1324y1y7yq");
+});
+
 run("normalize AICU reply", () => {
   const item = utils.normalizeAicuReply({
     rpid: 99,
@@ -77,6 +88,66 @@ run("filter by uid keyword and date", () => {
     keywords: ["旧评论"]
   });
   assert.equal(missed.matches, false);
+
+  const unknownAuthor = utils.matchesFilters({ message: "别人 @ 我" }, {
+    uid: "42",
+    keywords: []
+  });
+  assert.equal(unknownAuthor.matches, false);
+  assert.deepEqual(unknownAuthor.reasons, ["无法确认作者 UID"]);
+});
+
+run("parse manual import links and pairs", () => {
+  const parsed = utils.parseManualImportText("https://www.bilibili.com/video/av123/#reply456\n789,101112");
+  assert.equal(parsed.items.length, 2);
+  assert.equal(parsed.items[0].source, "手动导入");
+  assert.equal(parsed.items[0].oid, "123");
+  assert.equal(parsed.items[0].rpid, "456");
+  assert.equal(parsed.items[0].root, "");
+  assert.equal(parsed.items[0].level, "待核验");
+  assert.equal(parsed.items[1].oid, "789");
+  assert.equal(parsed.items[1].rpid, "101112");
+});
+
+run("parse manual import explicit root", () => {
+  const parsed = utils.parseManualImportText("123,456,789");
+  assert.equal(parsed.items.length, 1);
+  assert.equal(parsed.items[0].oid, "123");
+  assert.equal(parsed.items[0].rpid, "456");
+  assert.equal(parsed.items[0].root, "789");
+  assert.equal(parsed.items[0].level, "二级回复");
+});
+
+run("parse manual import does not use BVID digits as rpid", () => {
+  const parsed = utils.parseManualImportText("https://www.bilibili.com/video/BV1324y1y7yq/");
+  assert.equal(parsed.items.length, 0);
+  assert.equal(parsed.errors.length, 1);
+});
+
+run("parse manual import BVID with explicit rpid", () => {
+  const parsed = utils.parseManualImportText("BV1324y1y7yq 987654321 123456789");
+  assert.equal(parsed.items.length, 1);
+  assert.equal(parsed.items[0].bvid, "BV1324y1y7yq");
+  assert.equal(parsed.items[0].rpid, "987654321");
+  assert.equal(parsed.items[0].root, "123456789");
+  assert.equal(parsed.items[0].level, "二级回复");
+});
+
+run("parse manual import CSV", () => {
+  const parsed = utils.parseManualImportText('oid,rpid,message\n123,456,"他说 ""你好"""');
+  assert.equal(parsed.items.length, 1);
+  assert.equal(parsed.items[0].oid, "123");
+  assert.equal(parsed.items[0].rpid, "456");
+  assert.equal(parsed.items[0].message, '他说 "你好"');
+});
+
+run("parse manual import JSON export shape", () => {
+  const parsed = utils.parseManualImportText(JSON.stringify({
+    items: [{ oid: "123", rpid: "456", videoTitle: "测试", message: "导入评论" }]
+  }));
+  assert.equal(parsed.items.length, 1);
+  assert.equal(parsed.items[0].videoTitle, "测试");
+  assert.equal(parsed.items[0].message, "导入评论");
 });
 
 run("build CSV escapes values", () => {
