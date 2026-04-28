@@ -7,198 +7,167 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <header class="app-header">
-    <div>
-      <p class="eyebrow">AICU 索引 + B站登录态</p>
-      <h1>B站评论清理助手</h1>
-      <p class="subtitle">扫描或导入视频评论候选，预览勾选后慢速删除。</p>
-    </div>
-    <div class="login-panel">
-      <span id="loginStatus" class="status-chip neutral">未检测</span>
-      <button id="refreshLogin" class="button secondary" type="button">刷新登录态</button>
-    </div>
-  </header>
+  <div class="app-shell">
+    <aside class="side-nav">
+      <button class="brand-block" type="button" data-page="overviewPage" aria-label="B站评论清理助手">
+        <img class="brand-tv" src="assets/bilibili-tv.svg" alt="" aria-hidden="true">
+        <span>B站评论<br>清理助手</span>
+      </button>
 
-  <main class="layout">
-    <section class="panel controls-panel function-page" aria-labelledby="scanTitle">
-      <div class="section-head">
+      <nav class="nav-list" aria-label="主菜单">
+        <button class="nav-item" type="button" data-page="overviewPage"><span class="nav-glyph home"></span>总览</button>
+        <button class="nav-item active" type="button" data-page="aicuPage"><span class="nav-glyph search"></span>AICU 扫描</button>
+        <button class="nav-item" type="button" data-page="manualPage"><span class="nav-glyph upload"></span>手动导入</button>
+        <button class="nav-item" type="button" data-page="previewPage"><span class="nav-glyph trash"></span>预览删除</button>
+        <button class="nav-item" type="button" data-page="logsPage"><span class="nav-glyph log"></span>日志导出</button>
+        <button class="nav-item" type="button" data-page="settingsPage"><span class="nav-glyph gear"></span>设置</button>
+      </nav>
+
+      <div class="side-art">
+        <img src="assets/mascot-heart-display.png" alt="2233 比心插图">
+        <span class="side-wordmark">bilibili</span>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <header class="top-status">
         <div>
-          <h2 id="scanTitle">扫描功能页</h2>
-          <p>AICU 历史扫描和指定视频直扫得到的候选只进入本功能页下方的预览删除区。</p>
+          <strong>评论清理工作台</strong>
+          <span id="scanProgress" class="progress-text">尚未扫描</span>
         </div>
-      </div>
+        <div class="top-actions">
+          <span class="login-dot" aria-hidden="true"></span>
+          <span id="loginStatus" class="status-chip neutral">未检测</span>
+          <button id="refreshLogin" class="icon-text-button" type="button">刷新登录态</button>
+        </div>
+      </header>
 
-      <div class="form-grid">
-        <label>
-          <span>关键词</span>
-          <input id="keywords" type="text" placeholder="逗号分隔，留空表示不过滤">
-        </label>
-        <label>
-          <span>开始日期</span>
-          <input id="startDate" type="date">
-        </label>
-        <label>
-          <span>结束日期</span>
-          <input id="endDate" type="date">
-        </label>
-        <label>
-          <span>删除间隔（秒）</span>
-          <input id="deleteInterval" type="number" min="1" max="120" step="1" value="3">
-        </label>
-        <label>
-          <span>最多扫描页数</span>
-          <input id="maxPages" type="number" min="1" max="500" step="1" value="100">
-        </label>
-        <label class="checkbox-field">
-          <input id="strictVerify" type="checkbox" checked>
-          <span>删除前向 B站严格核验评论归属</span>
-        </label>
-        <label class="checkbox-field">
-          <input id="showProcessed" type="checkbox">
-          <span>显示已处理评论</span>
-        </label>
-      </div>
-
-      <div class="source-stack" aria-label="候选来源">
-        <details class="source-group" open>
-          <summary>
-            <span>
-              <strong>AICU 全历史扫描</strong>
-              <small>扫描当前 UID 在 AICU 中的全部历史评论索引，不读取右侧指定视频输入。</small>
-            </span>
-          </summary>
-          <div class="source-body">
-            <p>适合先大范围找出过往评论，再用关键词和日期缩小候选。</p>
-            <button id="startScan" class="button primary" type="button">扫描全部历史</button>
-          </div>
-        </details>
-
-        <details class="source-group" open>
-          <summary>
-            <span>
-              <strong>指定视频直扫</strong>
-              <small>只粘贴 BV、av 或视频 URL，插件会用当前登录 UID 自动寻找你的一级评论和二级回复。</small>
-            </span>
-          </summary>
-          <div class="source-body">
-            <label class="wide-field">
-              <span>视频列表（每行一个 BV / av / 视频 URL）</span>
-              <textarea id="videoList" rows="4" placeholder="例如：BV1xx411c7mD&#10;或：https://www.bilibili.com/video/BV1xx411c7mD"></textarea>
-            </label>
-            <button id="startVideoScan" class="button primary" type="button">直扫指定视频</button>
-          </div>
-        </details>
-      </div>
-
-      <div class="toolbar">
-        <button id="stopScan" class="button ghost" type="button" disabled>停止扫描</button>
-        <button id="clearResults" class="button ghost" type="button">清空扫描结果</button>
-        <button id="clearProcessed" class="button ghost" type="button">清除已处理记录</button>
-        <span id="scanProgress" class="progress-text">尚未扫描</span>
-      </div>
       <div id="message" class="message" role="status"></div>
-    </section>
 
-    <section class="metric-grid" aria-label="AICU 任务统计">
-      <div class="metric"><span>扫描候选</span><strong id="metricCandidates">0</strong></div>
-      <div class="metric"><span>已勾选</span><strong id="metricSelected">0</strong></div>
-      <div class="metric"><span>已删除</span><strong id="metricDeleted">0</strong></div>
-      <div class="metric"><span>失败/跳过</span><strong id="metricFailed">0</strong></div>
-      <div class="metric"><span>已处理隐藏</span><strong id="metricHidden">0</strong></div>
-    </section>
-
-    <section class="panel" aria-labelledby="previewTitle">
-      <div class="section-head">
-        <div>
-          <h2 id="previewTitle">扫描预览与删除</h2>
-          <p>这里只处理 AICU 扫描或指定视频直扫出来的候选。手动导入的候选不会混到这里。</p>
+      <section id="overviewPage" class="page-section" aria-labelledby="heroTitle" hidden>
+        <div class="hero-panel">
+          <div class="hero-copy">
+            <h1 id="heroTitle"><span>你所热爱的</span>就是你的生活</h1>
+            <p>通过 AICU 规则扫描评论，识别并标记可清理的候选内容。</p>
+          </div>
+          <div class="hero-art" aria-hidden="true">
+            <img src="assets/hero-characters-display.png" alt="">
+          </div>
         </div>
-        <div class="button-row">
-          <button id="selectAll" class="button secondary" type="button">全选</button>
-          <button id="invertSelection" class="button secondary" type="button">反选</button>
-          <button id="startDelete" class="button danger" type="button" disabled>开始删除</button>
-          <button id="pauseDelete" class="button secondary" type="button" disabled>暂停</button>
-          <button id="stopDelete" class="button ghost" type="button" disabled>停止</button>
+
+        <section class="metric-grid" aria-label="任务统计">
+          <div class="metric">
+            <span class="metric-icon people"></span>
+            <span>AICU 概述</span>
+            <strong id="metricCandidates">0</strong>
+          </div>
+          <div class="metric">
+            <span class="metric-icon check"></span>
+            <span>已勾选</span>
+            <strong id="metricSelected">0</strong>
+          </div>
+          <div class="metric">
+            <span class="metric-icon bin"></span>
+            <span>已删除</span>
+            <strong id="metricDeleted">0</strong>
+          </div>
+          <div class="metric">
+            <span class="metric-icon warn"></span>
+            <span>失败/跳过</span>
+            <strong id="metricFailed">0</strong>
+          </div>
+          <div class="metric">
+            <span class="metric-icon hidden"></span>
+            <span>已处理隐藏</span>
+            <strong id="metricHidden">0</strong>
+          </div>
+        </section>
+      </section>
+
+      <section id="aicuPage" class="page-section is-active" aria-labelledby="aicuTitle">
+        <div class="page-head">
+          <div>
+            <h1 id="aicuTitle">AICU 扫描</h1>
+            <p>全历史扫描依赖 AICU，指定视频扫描会直接读取 B站评论区。</p>
+          </div>
         </div>
-      </div>
 
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th class="select-col">选</th>
-              <th>状态</th>
-              <th>来源</th>
-              <th>时间</th>
-              <th>视频</th>
-              <th>层级</th>
-              <th>rpid/root</th>
-              <th>内容</th>
-              <th>匹配原因</th>
-            </tr>
-          </thead>
-          <tbody id="previewBody">
-            <tr><td colspan="9" class="empty">等待 AICU 扫描结果</td></tr>
-          </tbody>
-        </table>
-      </div>
-      <p id="renderHint" class="render-hint"></p>
-    </section>
+        <div class="scan-grid">
+          <article class="action-card">
+            <div class="card-icon scan-icon" aria-hidden="true"></div>
+            <div class="card-body">
+              <h2>AICU 全历史扫描</h2>
+              <p>对账号下的可用视频评论进行全量扫描。</p>
+              <p class="dependency-note">如果 AICU 被安全页拦截，请换网络或改用指定视频扫描。</p>
+            </div>
+            <button id="startScan" class="button primary full-width" type="button">扫描全部历史</button>
+          </article>
 
-    <section class="panel function-page" aria-labelledby="importTitle">
-      <div class="section-head">
-        <div>
-          <h2 id="importTitle">手动导入功能页</h2>
-          <p>粘贴评论链接、aid+rpid、CSV 或 JSON。BV/视频链接即使带 #reply，也会自动直扫并放入本页预览区。</p>
+          <article class="action-card">
+            <div class="card-icon play-icon" aria-hidden="true"></div>
+            <div class="card-body">
+              <h2>指定视频扫描</h2>
+              <p>粘贴 BV、av 或视频 URL，只识别视频号。</p>
+            </div>
+            <textarea id="videoList" class="compact-input" rows="4" placeholder="请输入 BV / av 号或视频 URL"></textarea>
+            <button id="startVideoScan" class="button primary full-width" type="button">扫描指定视频</button>
+          </article>
         </div>
-        <div class="button-row">
-          <button id="importManual" class="button primary" type="button">导入候选</button>
-          <button id="clearManualInput" class="button ghost" type="button">清空输入</button>
-        </div>
-      </div>
-      <label class="wide-field">
-        <span>导入内容</span>
-        <textarea id="manualImportText" rows="5" placeholder="示例：https://www.bilibili.com/video/av123/#reply456&#10;或：123,456&#10;或粘贴包含 oid,rpid,message 的 CSV / JSON"></textarea>
-      </label>
-      <p id="importProgress" class="progress-text">尚未导入</p>
+      </section>
 
-      <details class="source-group nested-preview" open>
-        <summary>
-          <span>
-            <strong>手动导入预览与删除</strong>
-            <small>手动导入后的评论只在这里出现，不进入 AICU 预览区。</small>
-          </span>
-        </summary>
-        <div class="source-body">
-          <section class="metric-grid compact-metrics" aria-label="手动导入任务统计">
-            <div class="metric"><span>手动候选</span><strong id="manualMetricCandidates">0</strong></div>
-            <div class="metric"><span>已勾选</span><strong id="manualMetricSelected">0</strong></div>
-            <div class="metric"><span>已删除</span><strong id="manualMetricDeleted">0</strong></div>
-            <div class="metric"><span>失败/跳过</span><strong id="manualMetricFailed">0</strong></div>
-          </section>
-
+      <section id="manualPage" class="page-section" aria-labelledby="importTitle" hidden>
+        <div class="page-head">
+          <div>
+            <h1 id="importTitle">手动导入</h1>
+            <p>手动导入后的评论只在本页面预览和删除，不会混入 AICU 预览区。</p>
+          </div>
           <div class="button-row">
-            <button id="manualSelectAll" class="button secondary" type="button">全选</button>
-            <button id="manualInvertSelection" class="button secondary" type="button">反选</button>
-            <button id="manualClearResults" class="button ghost" type="button">清空手动结果</button>
-            <button id="manualStartDelete" class="button danger" type="button" disabled>开始删除</button>
-            <button id="manualPauseDelete" class="button secondary" type="button" disabled>暂停</button>
-            <button id="manualStopDelete" class="button ghost" type="button" disabled>停止</button>
+            <button id="importManual" class="button primary tiny" type="button">导入候选</button>
+            <button id="clearManualInput" class="button tiny outline" type="button">清空输入</button>
+          </div>
+        </div>
+
+        <section class="panel">
+          <label class="wide-field">
+            <span>导入内容</span>
+            <textarea id="manualImportText" rows="5" placeholder="粘贴 BV、视频链接、评论链接、aid+rpid、CSV 或 JSON"></textarea>
+          </label>
+          <p id="importProgress" class="progress-text">尚未导入</p>
+        </section>
+
+        <section class="metric-grid compact-metrics" aria-label="手动导入任务统计">
+          <div class="metric"><span>手动候选</span><strong id="manualMetricCandidates">0</strong></div>
+          <div class="metric"><span>已勾选</span><strong id="manualMetricSelected">0</strong></div>
+          <div class="metric"><span>已删除</span><strong id="manualMetricDeleted">0</strong></div>
+          <div class="metric"><span>失败/跳过</span><strong id="manualMetricFailed">0</strong></div>
+        </section>
+
+        <section class="panel" aria-label="手动导入预览与删除">
+          <div class="section-head">
+            <h2>手动导入预览与删除</h2>
+            <div class="button-row">
+              <button id="manualSelectAll" class="button tiny" type="button">全选</button>
+              <button id="manualInvertSelection" class="button tiny" type="button">反选</button>
+              <button id="manualClearResults" class="button tiny outline" type="button">清空手动结果</button>
+              <button id="manualStartDelete" class="button danger tiny" type="button" disabled>开始删除</button>
+              <button id="manualPauseDelete" class="button tiny" type="button" disabled>暂停</button>
+              <button id="manualStopDelete" class="button tiny outline" type="button" disabled>停止</button>
+            </div>
           </div>
 
           <div class="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th class="select-col">选</th>
+                  <th class="select-col">选择</th>
                   <th>状态</th>
                   <th>来源</th>
                   <th>时间</th>
                   <th>视频</th>
                   <th>层级</th>
                   <th>rpid/root</th>
-                  <th>内容</th>
-                  <th>匹配原因</th>
+                  <th>评论内容</th>
+                  <th>命中规则</th>
                 </tr>
               </thead>
               <tbody id="manualPreviewBody">
@@ -207,25 +176,130 @@
             </table>
           </div>
           <p id="manualRenderHint" class="render-hint"></p>
-        </div>
-      </details>
-    </section>
+        </section>
+      </section>
 
-    <section class="panel" aria-labelledby="logTitle">
-      <div class="section-head">
-        <div>
-          <h2 id="logTitle">日志导出</h2>
-          <p>导出会包含候选评论、删除状态、错误码和错误信息。</p>
+      <section id="previewPage" class="page-section" aria-labelledby="previewTitle" hidden>
+        <div class="page-head">
+          <div>
+            <h1 id="previewTitle">预览删除</h1>
+            <p>这里只显示 AICU 全历史扫描和指定视频扫描得到的候选。</p>
+          </div>
+          <div class="button-row">
+            <button id="selectAll" class="button tiny" type="button">全选</button>
+            <button id="invertSelection" class="button tiny" type="button">反选</button>
+            <button id="startDelete" class="button danger tiny" type="button" disabled>开始删除</button>
+            <button id="pauseDelete" class="button tiny" type="button" disabled>暂停</button>
+            <button id="stopDelete" class="button tiny outline" type="button" disabled>停止</button>
+          </div>
         </div>
-        <div class="button-row">
-          <button id="exportCsv" class="button secondary" type="button" disabled>导出 CSV</button>
-          <button id="exportJson" class="button secondary" type="button" disabled>导出 JSON</button>
-          <button id="copyDebug" class="button ghost" type="button" disabled>复制诊断日志</button>
+
+        <section class="panel preview-panel">
+          <div class="table-wrap tall-table">
+            <table>
+              <thead>
+                <tr>
+                  <th class="select-col">选择</th>
+                  <th>状态</th>
+                  <th>来源</th>
+                  <th>时间</th>
+                  <th>视频</th>
+                  <th>层级</th>
+                  <th>rpid/root</th>
+                  <th>评论内容</th>
+                  <th>命中规则</th>
+                </tr>
+              </thead>
+              <tbody id="previewBody">
+                <tr><td colspan="9" class="empty">等待 AICU 扫描结果</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p id="renderHint" class="render-hint"></p>
+        </section>
+      </section>
+
+      <section id="logsPage" class="page-section" aria-labelledby="logTitle" hidden>
+        <div class="page-head">
+          <div>
+            <h1 id="logTitle">日志导出</h1>
+            <p>导出会包含候选评论、删除状态、错误码和诊断信息。</p>
+          </div>
+          <div class="button-row">
+            <button id="exportCsv" class="button tiny" type="button" disabled>导出 CSV</button>
+            <button id="exportJson" class="button tiny" type="button" disabled>导出 JSON</button>
+            <button id="copyDebug" class="button tiny outline" type="button" disabled>复制诊断</button>
+          </div>
         </div>
-      </div>
-      <div id="logList" class="log-list">暂无日志</div>
-    </section>
-  </main>
+
+        <section class="panel log-panel">
+          <div id="logList" class="log-list">暂无日志</div>
+        </section>
+      </section>
+
+      <section id="settingsPage" class="page-section" aria-labelledby="settingsTitle" hidden>
+        <div class="page-head">
+          <div>
+            <h1 id="settingsTitle">设置</h1>
+            <p>关键词、日期范围和删除节奏会自动保存。</p>
+          </div>
+        </div>
+
+        <section class="panel settings-panel">
+          <div class="settings-grid">
+            <label>
+              <span>关键词</span>
+              <input id="keywords" type="text" placeholder="可选，多个用逗号分隔">
+            </label>
+            <label>
+              <span>日期范围</span>
+              <div class="date-range">
+                <input id="startDate" type="date" aria-label="开始日期">
+                <span>~</span>
+                <input id="endDate" type="date" aria-label="结束日期">
+              </div>
+            </label>
+            <label>
+              <span>删除间隔</span>
+              <select id="deleteInterval">
+                <option value="1">1 秒</option>
+                <option value="2">2 秒</option>
+                <option value="3" selected>3 秒</option>
+                <option value="5">5 秒</option>
+                <option value="10">10 秒</option>
+              </select>
+            </label>
+            <label>
+              <span>页码上限</span>
+              <select id="maxPages">
+                <option value="25">25 页</option>
+                <option value="50">50 页</option>
+                <option value="100" selected>100 页</option>
+                <option value="200">200 页</option>
+                <option value="500">500 页</option>
+              </select>
+            </label>
+            <label class="toggle-field">
+              <span>严格校验</span>
+              <input id="strictVerify" type="checkbox" checked>
+              <i aria-hidden="true"></i>
+            </label>
+            <label class="toggle-field">
+              <span>显示已处理</span>
+              <input id="showProcessed" type="checkbox">
+              <i aria-hidden="true"></i>
+            </label>
+          </div>
+
+          <div class="settings-actions">
+            <button id="stopScan" class="button outline" type="button" disabled>停止扫描</button>
+            <button id="clearResults" class="button outline" type="button">清空扫描结果</button>
+            <button id="clearProcessed" class="button subtle" type="button">清除已处理记录</button>
+          </div>
+        </section>
+      </section>
+    </main>
+  </div>
 
   <script src="utils.js"></script>
   <script src="dashboard.js"></script>

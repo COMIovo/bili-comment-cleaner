@@ -5,6 +5,8 @@
   const AICU_REPLY_API = "https://api.aicu.cc/api/v3/search/getreply";
   const AICU_WORKER_URL = "https://www.aicu.cc/";
   const AICU_API_ORIGIN = "https://api.aicu.cc/";
+  const AICU_BLOCKED_MESSAGE = "AICU 当前返回安全检测页（雷池/WAF），全历史扫描暂时不可用。请换网络稍后重试，或改用“指定视频扫描”（直接扫 B站评论区，不依赖 AICU）。";
+  const AICU_UNAVAILABLE_MESSAGE = "AICU 页面没有正常打开，可能被网络、VPN 或安全检测页拦截。请换网络稍后重试，或改用“指定视频扫描”。";
   const BILI_NAV_API = "https://api.bilibili.com/x/web-interface/nav";
   const BILI_VIEW_API = "https://api.bilibili.com/x/web-interface/view";
   const BILI_REPLY_PAGE_API = "https://api.bilibili.com/x/v2/reply";
@@ -66,6 +68,7 @@
   async function init() {
     bindElements();
     bindEvents();
+    bindPageNavigation();
     await loadSettings();
     applySettingsToForm();
     renderAll();
@@ -123,6 +126,36 @@
         saveSettings();
       });
     }
+  }
+
+  function bindPageNavigation() {
+    const navItems = Array.from(document.querySelectorAll("[data-page]"));
+    const pages = Array.from(document.querySelectorAll(".page-section"));
+    if (navItems.length === 0 || pages.length === 0) return;
+
+    const pageIds = new Set(pages.map((page) => page.id));
+    const defaultPage = document.querySelector(".nav-item.active")?.dataset.page || "aicuPage";
+
+    const showPage = (pageId, updateHash = true) => {
+      const nextPageId = pageIds.has(pageId) ? pageId : defaultPage;
+      for (const page of pages) {
+        const active = page.id === nextPageId;
+        page.hidden = !active;
+        page.classList.toggle("is-active", active);
+      }
+      for (const item of navItems) {
+        item.classList.toggle("active", item.dataset.page === nextPageId);
+      }
+      if (updateHash && window.location.hash !== `#${nextPageId}`) {
+        history.replaceState(null, "", `#${nextPageId}`);
+      }
+    };
+
+    for (const item of navItems) {
+      item.addEventListener("click", () => showPage(item.dataset.page));
+    }
+
+    showPage(window.location.hash ? window.location.hash.slice(1) : defaultPage, false);
   }
 
   async function loadSettings() {
@@ -331,8 +364,9 @@
       const hiddenText = state.scan.hiddenProcessed ? `，隐藏已处理 ${state.scan.hiddenProcessed} 条` : "";
       setMessage(`${scanLabel}扫描完成${stopped}：读取 ${state.scan.scanned} 条索引，匹配 ${state.items.length} 条${hiddenText}。`, "success");
     } catch (error) {
-      setMessage(`扫描失败：${error.message}`, "error");
-      addLog("扫描失败", "error", error.message);
+      const message = friendlyScanError(error);
+      setMessage(`扫描失败：${message}`, "error");
+      addLog("扫描失败", "error", message);
     } finally {
       state.scan.running = false;
       state.scan.stop = false;
@@ -381,10 +415,13 @@
 
     let filters;
     try {
-      const range = utils.parseDateRange(state.settings.startDate, state.settings.endDate);
+      const useContentFilters = targetPool !== "manual";
+      const range = useContentFilters
+        ? utils.parseDateRange(state.settings.startDate, state.settings.endDate)
+        : { start: null, end: null };
       filters = {
         uid: state.user.uid,
-        keywords: utils.parseKeywords(state.settings.keywords),
+        keywords: useContentFilters ? utils.parseKeywords(state.settings.keywords) : [],
         start: range.start,
         end: range.end
       };
@@ -497,6 +534,50 @@
   }
 
   async function scanBiliVideo(video, filters, seenKeys, poolName = "aicu") {
+    try {
+      return await scanBiliVideoByCursor(video, filters, seenKeys, poolName);
+    } catch (error) {
+      if (state.scan.stop) return 0;
+      addLog("视频评论扫描", "warn", `${video.title || video.aid}: reply/main 游标扫描失败，改用旧分页接口：${error.message}`);
+      return scanBiliVideoByPage(video, filters, seenKeys, poolName);
+    }
+  }
+
+  async function scanBiliVideoByCursor(video, filters, seenKeys, poolName = "aicu") {
+    let matched = 0;
+    const maxPages = state.settings.maxPages;
+    const visitedCursors = new Set();
+    let next = "0";
+
+    for (let page = 1; page <= maxPages; page += 1) {
+      if (state.scan.stop) break;
+      if (visitedCursors.has(next)) break;
+      visitedCursors.add(next);
+      state.scan.pages = page;
+      updateScanProgress(`正在直扫 ${video.title || `av${video.aid}`} 第 ${page} 页评论...`);
+
+      const payload = await fetchBiliReplyMainPage(video.aid, next);
+      if (payload.code !== 0) {
+        throw new Error(payload.message || payload.msg || String(payload.code));
+      }
+
+      const roots = extractReplyArray(payload.data);
+      matched += await scanBiliReplyRoots(roots, video, filters, seenKeys, `cursor${next}-p${page}`, poolName);
+
+      renderAll();
+      const nextCursor = readMainReplyNext(payload.data);
+      if (isMainReplyCursorEnd(payload.data, roots, nextCursor)) break;
+      if (visitedCursors.has(nextCursor)) {
+        throw new Error("reply/main 游标没有推进");
+      }
+      next = nextCursor;
+      await sleep(650);
+    }
+
+    return matched;
+  }
+
+  async function scanBiliVideoByPage(video, filters, seenKeys, poolName = "aicu") {
     let matched = 0;
     const maxPages = state.settings.maxPages;
 
@@ -512,27 +593,34 @@
       }
 
       const roots = extractReplyArray(payload.data);
-      state.scan.scanned += roots.length;
-      for (let index = 0; index < roots.length; index += 1) {
-        const root = roots[index];
-        matched += addBiliReplyCandidate(root, video, "", filters, seenKeys, `p${page}-${index}`, poolName);
-
-        const inlineReplies = Array.isArray(root.replies) ? root.replies : [];
-        state.scan.scanned += inlineReplies.length;
-        for (let subIndex = 0; subIndex < inlineReplies.length; subIndex += 1) {
-          matched += addBiliReplyCandidate(inlineReplies[subIndex], video, String(root.rpid || root.rpid_str || root.id || ""), filters, seenKeys, `p${page}-${index}-${subIndex}`, poolName);
-        }
-
-        if (hasSecondReplies(root)) {
-          matched += await scanBiliSecondReplies(video, String(root.rpid || root.rpid_str || root.id || ""), filters, seenKeys, poolName);
-        }
-      }
+      matched += await scanBiliReplyRoots(roots, video, filters, seenKeys, `p${page}`, poolName);
 
       renderAll();
       if (isMainReplyEnd(payload.data, roots, page)) break;
       await sleep(650);
     }
 
+    return matched;
+  }
+
+  async function scanBiliReplyRoots(roots, video, filters, seenKeys, indexPrefix, poolName = "aicu") {
+    let matched = 0;
+    state.scan.scanned += roots.length;
+    for (let index = 0; index < roots.length; index += 1) {
+      const root = roots[index];
+      const rootRpid = getReplyRpid(root);
+      matched += addBiliReplyCandidate(root, video, "", filters, seenKeys, `${indexPrefix}-${index}`, poolName);
+
+      const inlineReplies = getInlineReplies(root);
+      state.scan.scanned += inlineReplies.length;
+      for (let subIndex = 0; subIndex < inlineReplies.length; subIndex += 1) {
+        matched += addBiliReplyCandidate(inlineReplies[subIndex], video, rootRpid, filters, seenKeys, `${indexPrefix}-${index}-${subIndex}`, poolName);
+      }
+
+      if (hasSecondReplies(root)) {
+        matched += await scanBiliSecondReplies(video, rootRpid, filters, seenKeys, poolName);
+      }
+    }
     return matched;
   }
 
@@ -576,7 +664,7 @@
   }
 
   function normalizeBiliReply(reply, video, fallbackRoot, index) {
-    const rpid = String(reply && (reply.rpid || reply.rpid_str || reply.id || "") || "");
+    const rpid = getReplyRpid(reply);
     const rootValue = String(reply && (reply.root || reply.root_id || reply.rootId || "") || "");
     const root = rootValue && rootValue !== "0" ? rootValue : fallbackRoot || rpid;
     const content = reply && reply.content ? reply.content : {};
@@ -601,9 +689,21 @@
     };
   }
 
+  function getReplyRpid(reply) {
+    return String(reply && (reply.rpid || reply.rpid_str || reply.reply_id || reply.replyId || reply.id || "") || "");
+  }
+
+  function getInlineReplies(reply) {
+    if (!reply || typeof reply !== "object") return [];
+    if (Array.isArray(reply.replies)) return reply.replies;
+    if (Array.isArray(reply.children)) return reply.children;
+    return [];
+  }
+
   function hasSecondReplies(reply) {
     if (!reply || typeof reply !== "object") return false;
     if (Array.isArray(reply.replies) && reply.replies.length > 0) return true;
+    if (Array.isArray(reply.children) && reply.children.length > 0) return true;
     return Number(reply.rcount || reply.reply_count || reply.count || 0) > 0;
   }
 
@@ -615,6 +715,16 @@
     url.searchParams.set("ps", String(REPLY_PAGE_SIZE));
     url.searchParams.set("sort", "0");
     url.searchParams.set("nohot", "1");
+    return fetchBiliJson(url.toString());
+  }
+
+  async function fetchBiliReplyMainPage(oid, next) {
+    const url = new URL(BILI_REPLY_MAIN_API);
+    url.searchParams.set("type", "1");
+    url.searchParams.set("oid", oid);
+    url.searchParams.set("mode", "3");
+    url.searchParams.set("next", String(next || "0"));
+    url.searchParams.set("ps", String(REPLY_PAGE_SIZE));
     return fetchBiliJson(url.toString());
   }
 
@@ -882,6 +992,9 @@
         return await fetcher();
       } catch (error) {
         lastError = error;
+        if (isAicuBlockedError(error) || isAicuUnavailableError(error)) {
+          throw error;
+        }
         if (!/468|429|timeout|超时|未返回|failed/i.test(error.message || "")) {
           break;
         }
@@ -1248,7 +1361,35 @@
   }
 
   function getReplyMid(reply) {
-    return reply && (reply.mid || reply.uid || (reply.member && (reply.member.mid || reply.member.uid)));
+    if (!reply || typeof reply !== "object") return "";
+    const member = reply.member && typeof reply.member === "object" ? reply.member : {};
+    const user = reply.user && typeof reply.user === "object" ? reply.user : {};
+    const author = reply.author && typeof reply.author === "object" ? reply.author : {};
+    const content = reply.content && typeof reply.content === "object" ? reply.content : {};
+    return firstUsableValue(
+      reply.mid,
+      reply.uid,
+      reply.member_mid,
+      reply.mid_str,
+      member.mid,
+      member.uid,
+      member.member_mid,
+      user.mid,
+      user.uid,
+      author.mid,
+      author.uid,
+      content.mid,
+      content.uid
+    );
+  }
+
+  function firstUsableValue() {
+    for (const value of arguments) {
+      if (value !== undefined && value !== null && String(value) !== "") {
+        return value;
+      }
+    }
+    return "";
   }
 
   function applyVerifiedReply(item, reply, fallbackRoot = "") {
@@ -1262,6 +1403,10 @@
     }
     if (!item.message && reply.content && reply.content.message) {
       item.message = reply.content.message;
+    }
+    const mid = getReplyMid(reply);
+    if (mid) {
+      item.ownerMid = String(mid);
     }
     if (!item.ctime && reply.ctime) {
       item.ctime = Number(reply.ctime) || 0;
@@ -1290,6 +1435,20 @@
     if (Array.isArray(data.replies)) return data.replies;
     if (data.root && Array.isArray(data.root.replies)) return data.root.replies;
     return [];
+  }
+
+  function readMainReplyNext(data) {
+    const cursor = data && data.cursor && typeof data.cursor === "object" ? data.cursor : {};
+    const raw = cursor.next ?? data?.next ?? "";
+    if (raw === undefined || raw === null || raw === "") return "";
+    return String(raw);
+  }
+
+  function isMainReplyCursorEnd(data, replies, nextCursor) {
+    const cursor = data && data.cursor && typeof data.cursor === "object" ? data.cursor : {};
+    if (cursor.is_end === true || cursor.is_end === 1 || cursor.is_end === "1") return true;
+    if (!Array.isArray(replies) || replies.length === 0) return true;
+    return !nextCursor;
   }
 
   function isSecondReplyEnd(data, replies, page) {
@@ -1341,15 +1500,62 @@
     };
   }
 
+  function looksLikeAicuSecurityPage(text) {
+    const value = String(text || "");
+    return /安全检测能力由\s*雷池|雷池|SafeLine|WAF|人机验证|访问被拦截|安全检测/.test(value);
+  }
+
+  function createAicuBlockedError(detail) {
+    const error = new Error(detail ? `${AICU_BLOCKED_MESSAGE}（${detail}）` : AICU_BLOCKED_MESSAGE);
+    error.aicuBlocked = true;
+    return error;
+  }
+
+  function createAicuUnavailableError(detail) {
+    const error = new Error(detail ? `${AICU_UNAVAILABLE_MESSAGE}（${detail}）` : AICU_UNAVAILABLE_MESSAGE);
+    error.aicuUnavailable = true;
+    return error;
+  }
+
+  function isAicuBlockedError(error) {
+    return Boolean(error && (error.aicuBlocked || looksLikeAicuSecurityPage(error.message)));
+  }
+
+  function isAicuUnavailableError(error) {
+    return Boolean(error && error.aicuUnavailable);
+  }
+
+  function shouldSkipAicuApiTabFallback(directError, workerError) {
+    const message = `${directError && directError.message ? directError.message : directError || ""}；${workerError && workerError.message ? workerError.message : workerError || ""}`;
+    return /HTTP 468|安全检测|雷池|Frame with ID \d+ is showing error page|ERR_FAILED|ERR_BLOCKED|blocked by/i.test(message);
+  }
+
+  function friendlyScanError(error) {
+    if (isAicuBlockedError(error)) return AICU_BLOCKED_MESSAGE;
+    if (isAicuUnavailableError(error)) return AICU_UNAVAILABLE_MESSAGE;
+    return error && error.message ? error.message : String(error);
+  }
+
   async function fetchJson(url, options = {}) {
     const response = await fetch(url, {
       ...options,
       credentials: options.credentials || "omit"
     });
+    const text = await response.text();
     if (!response.ok) {
+      if (response.status === 468 || looksLikeAicuSecurityPage(text)) {
+        throw createAicuBlockedError(`HTTP ${response.status}`);
+      }
       throw new Error(`HTTP ${response.status}`);
     }
-    return response.json();
+    try {
+      return text ? JSON.parse(text) : null;
+    } catch (error) {
+      if (looksLikeAicuSecurityPage(text)) {
+        throw createAicuBlockedError(`JSON 解析失败：${error.message}`);
+      }
+      throw new Error(`JSON 解析失败：${error.message}`);
+    }
   }
 
   async function fetchAicuJson(url, options = {}) {
@@ -1366,6 +1572,9 @@
         credentials: "omit"
       });
     } catch (directError) {
+      if (isAicuBlockedError(directError)) {
+        throw directError;
+      }
       const directMessage = directError.message || String(directError);
       try {
         let workerTab = null;
@@ -1375,13 +1584,22 @@
           if (value && value.ok && value.json) {
             return value.json;
           }
+          if (value && (value.blocked || looksLikeAicuSecurityPage(value.text) || looksLikeAicuSecurityPage(value.error))) {
+            throw createAicuBlockedError(`工作页 HTTP ${value.status || "unknown"}`);
+          }
 
           const workerMessage = value
             ? `工作页 HTTP ${value.status || "unknown"} ${value.error || ""}`.trim()
             : "工作页未返回结果";
+          if (shouldSkipAicuApiTabFallback(directError, new Error(workerMessage))) {
+            throw createAicuUnavailableError(`${directMessage}；${workerMessage}`);
+          }
           try {
             return await fetchJsonViaApiTab(url);
           } catch (fallbackError) {
+            if (isAicuBlockedError(fallbackError) || isAicuUnavailableError(fallbackError)) {
+              throw fallbackError;
+            }
             throw new Error(`直连失败：${directMessage}；${workerMessage}；API 页签失败：${fallbackError.message}`);
           }
         } finally {
@@ -1393,9 +1611,18 @@
         if (/直连失败：/.test(workerError.message || "")) {
           throw workerError;
         }
+        if (isAicuBlockedError(workerError) || isAicuUnavailableError(workerError)) {
+          throw workerError;
+        }
+        if (shouldSkipAicuApiTabFallback(directError, workerError)) {
+          throw createAicuUnavailableError(`${directMessage}；${workerError.message || workerError}`);
+        }
         try {
           return await fetchJsonViaApiTab(url);
         } catch (fallbackError) {
+          if (isAicuBlockedError(fallbackError) || isAicuUnavailableError(fallbackError)) {
+            throw fallbackError;
+          }
           throw new Error(`直连失败：${directMessage}；工作页失败：${workerError.message}；API 页签失败：${fallbackError.message}`);
         }
       }
@@ -1491,6 +1718,7 @@
         target: { tabId },
         args: [request],
         func: async (req) => {
+          const looksLikeSecurityPage = (value) => /安全检测能力由\s*雷池|雷池|SafeLine|WAF|人机验证|访问被拦截|安全检测/.test(String(value || ""));
           try {
             const response = await fetch(req.url, {
               method: req.method,
@@ -1500,6 +1728,15 @@
             });
             const text = await response.text();
             let json = null;
+            if (looksLikeSecurityPage(text)) {
+              return {
+                ok: false,
+                status: response.status,
+                blocked: true,
+                error: "安全检测页",
+                text: text.slice(0, 1000)
+              };
+            }
             try {
               json = text ? JSON.parse(text) : null;
             } catch (error) {
@@ -1572,6 +1809,9 @@
       if (!value || !value.text) {
         throw new Error("API 页签没有可读取文本");
       }
+      if (looksLikeAicuSecurityPage(value.text)) {
+        throw createAicuBlockedError(`API 页签返回安全检测页；title=${value.title || ""}`);
+      }
       try {
         return JSON.parse(value.text);
       } catch (error) {
@@ -1617,14 +1857,6 @@
   }
 
   async function ensureApiTab(url) {
-    const tabs = await chrome.tabs.query({ url: "https://api.aicu.cc/*" });
-    const existing = tabs.find((tab) => tab.id && !tab.discarded);
-    if (existing && existing.id) {
-      await chrome.tabs.update(existing.id, { url, active: false });
-      await waitForTabComplete(existing.id, "AICU API 页签加载超时");
-      return { id: existing.id, created: false };
-    }
-
     const tab = await chrome.tabs.create({ url, active: false });
     if (!tab.id) {
       throw new Error("无法创建 AICU API 页签");
@@ -1781,6 +2013,7 @@
       debug: item.debug || ""
     });
     renderLogs();
+    renderButtons();
   }
 
   function addLog(title, level, message) {
@@ -1791,15 +2024,21 @@
       message
     });
     renderLogs();
+    renderButtons();
   }
 
   function exportCsv() {
-    const rows = buildExportRows();
+    const rows = buildCsvExportRows();
     const headers = [
-      "status", "pool", "source", "errorCode", "errorMessage", "uid", "oid", "bvid", "videoTitle",
+      "recordType", "status", "pool", "source", "errorCode", "errorMessage", "uid", "oid", "bvid", "videoTitle",
       "videoUrl", "level", "rpid", "root", "ctime", "timeText", "message",
-      "reason", "verifyCode", "verifyMessage", "apiCode", "apiMessage", "processedStatus", "processedAt", "debug", "deletedAt"
+      "reason", "verifyCode", "verifyMessage", "apiCode", "apiMessage", "processedStatus", "processedAt", "debug", "deletedAt",
+      "logAt", "logStatus", "logCode", "logMessage"
     ];
+    if (rows.length === 0) {
+      setMessage("暂无可导出的候选或日志。", "warn");
+      return;
+    }
     const csv = utils.buildCsv(headers, rows);
     downloadBlob(csv, `bili-comment-cleaner-${dateStamp()}.csv`, "text/csv;charset=utf-8");
   }
@@ -1880,6 +2119,52 @@
     }));
   }
 
+  function buildCsvExportRows() {
+    const itemRows = buildExportRows().map((row) => ({
+      recordType: "comment",
+      ...row,
+      logAt: "",
+      logStatus: "",
+      logCode: "",
+      logMessage: ""
+    }));
+
+    const logRows = state.logs.map((log) => ({
+      recordType: "log",
+      status: "",
+      pool: log.pool || "",
+      source: "",
+      errorCode: "",
+      errorMessage: "",
+      uid: "",
+      oid: log.oid || "",
+      bvid: "",
+      videoTitle: "",
+      videoUrl: "",
+      level: log.level || "",
+      rpid: log.rpid || "",
+      root: log.root || "",
+      ctime: "",
+      timeText: "",
+      message: "",
+      reason: "",
+      verifyCode: "",
+      verifyMessage: "",
+      apiCode: "",
+      apiMessage: "",
+      processedStatus: "",
+      processedAt: "",
+      debug: log.debug || "",
+      deletedAt: "",
+      logAt: log.at || "",
+      logStatus: log.status || "",
+      logCode: log.code || "",
+      logMessage: log.message || ""
+    }));
+
+    return itemRows.concat(logRows);
+  }
+
   function downloadBlob(text, filename, type) {
     const blob = new Blob([text], { type });
     const url = URL.createObjectURL(blob);
@@ -1922,9 +2207,10 @@
     els.manualPauseDelete.disabled = !deletingManual;
     els.manualPauseDelete.textContent = state.deletion.paused ? "继续" : "暂停";
     els.manualStopDelete.disabled = !deletingManual;
-    els.exportCsv.disabled = allItems().length === 0;
-    els.exportJson.disabled = allItems().length === 0;
-    els.copyDebug.disabled = allItems().length === 0 && state.logs.length === 0;
+    const hasExportableData = allItems().length > 0 || state.logs.length > 0;
+    els.exportCsv.disabled = !hasExportableData;
+    els.exportJson.disabled = !hasExportableData;
+    els.copyDebug.disabled = !hasExportableData;
   }
 
   function renderMetrics() {
