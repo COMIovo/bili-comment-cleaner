@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "B站评论清理助手",
+  "version": "1.0.34",
+  "description": "通过 AICU 索引定位当前账号历史评论，预览勾选后使用 B站登录态批量清理视频评论。",
+  "icons": {
+    "16": "assets/icon-16.png",
+    "32": "assets/icon-32.png",
+    "48": "assets/icon-48.png",
+    "128": "assets/icon-128.png"
+  },
+  "permissions": [
+    "cookies",
+    "scripting",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://*.bilibili.com/*",
+    "https://api.aicu.cc/*",
+    "https://www.aicu.cc/*"
+  ],
+  "action": {
+    "default_title": "打开评论清理助手",
+    "default_icon": {
+      "16": "assets/icon-16.png",
+      "32": "assets/icon-32.png",
+      "48": "assets/icon-48.png",
+      "128": "assets/icon-128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}
